@@ -6,13 +6,14 @@ from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
 
 from app.database import get_connection
-
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(
     title="ServiceTI API",
     version="1.0.0"
 )
 
+Instrumentator().instrument(app).expose(app)
 
 API_INTERNAL_KEY = os.getenv("API_INTERNAL_KEY", "")
 

@@ -9,14 +9,28 @@ services:
       - "--api.dashboard=true"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+
+      # HTTP
       - "--entrypoints.web.address=:80"
+
+      # HTTPS
+      - "--entrypoints.websecure.address=:443"
+
+      # Let's Encrypt / ACME
+      - "--certificatesresolvers.letsencrypt.acme.email=alexcabanha@gmail.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+
       - "--ping=true"
 
     ports:
       - "80:80"
+      - "443:443"
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
 
     networks:
       - frontend_net
@@ -28,7 +42,7 @@ services:
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
       start_period: 10s
 
@@ -54,12 +68,23 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=projeto-final_frontend_net"
-      - "traefik.http.routers.helpdesk.rule=PathPrefix(`/`)"
-      - "traefik.http.routers.helpdesk.entrypoints=web"
+
+  # Acesso pelo domínio + HTTPS
+      - "traefik.http.routers.helpdesk.rule=Host(`helpdesk.alexcabanha.com.br`)"
+      - "traefik.http.routers.helpdesk.entrypoints=websecure"
+      - "traefik.http.routers.helpdesk.priority=100"
+      - "traefik.http.routers.helpdesk.tls=true"
+      - "traefik.http.routers.helpdesk.tls.certresolver=letsencrypt"
       - "traefik.http.services.helpdesk.loadbalancer.server.port=80"
 
-    mem_limit: 128m
-    cpus: 0.50
+  # Acesso pelo IP + HTTP
+      - "traefik.http.routers.helpdesk-ip.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.helpdesk-ip.entrypoints=web"
+      - "traefik.http.routers.helpdesk-ip.priority=1"
+      - "traefik.http.routers.helpdesk-ip.service=helpdesk"
+
+    mem_limit: 256m
+    cpus: 0.75
 
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/"]
@@ -131,17 +156,20 @@ services:
     networks:
       - frontend_net
       - backend_net
+      - monitoring_net
 
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=projeto-final_frontend_net"
-      - "traefik.http.routers.backend.rule=PathPrefix(`/api`)"
-      - "traefik.http.routers.backend.entrypoints=web"
-      - "traefik.http.routers.backend.priority=100"
+      - "traefik.http.routers.backend.rule=Host(`helpdesk.alexcabanha.com.br`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.priority=150"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
       - "traefik.http.services.backend.loadbalancer.server.port=8000"
 
-    mem_limit: 256m
-    cpus: 0.50
+    mem_limit: 512m
+    cpus: 0.75
 
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8000/health"]
@@ -206,10 +234,117 @@ services:
       start_period: 10s
 
 
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: unless-stopped
+
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+
+    networks:
+      - monitoring_net
+
+    mem_limit: 512m
+    cpus: 1.00
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:8080/healthz"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+
+    command:
+      - "--path.rootfs=/host"
+
+    volumes:
+      - /:/host:ro,rslave
+
+    networks:
+      - monitoring_net
+
+    mem_limit: 256m
+    cpus: 0.75
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:9100/metrics"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+
+    networks:
+      - monitoring_net
+
+    mem_limit: 512m
+    cpus: 1.00
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:9090/-/healthy"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
     restart: unless-stopped
+
+    environment:
+      GF_SERVER_ROOT_URL: "https://helpdesk.alexcabanha.com.br/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
 
     volumes:
       - grafana_data:/var/lib/grafana
@@ -221,18 +356,24 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=projeto-final_frontend_net"
-      - "traefik.http.routers.grafana.rule=PathPrefix(`/grafana`)"
-      - "traefik.http.routers.grafana.entrypoints=web"
+      - "traefik.http.routers.grafana.rule=Host(`helpdesk.alexcabanha.com.br`) && PathPrefix(`/grafana`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.priority=200"
+      - "traefik.http.routers.grafana.tls=true"
+      - "traefik.http.routers.grafana.tls.certresolver=letsencrypt"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
 
-    mem_limit: 512m
-    cpus: 0.50
+    mem_limit: 1g
+    cpus: 1
 
 
   portainer:
     image: portainer/portainer-ce:latest
     container_name: portainer
     restart: unless-stopped
+
+    command:
+      - "--base-url=/portainer"
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -245,12 +386,32 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=projeto-final_frontend_net"
-      - "traefik.http.routers.portainer.rule=PathPrefix(`/portainer`)"
-      - "traefik.http.routers.portainer.entrypoints=web"
+
+      # /portainer -> /portainer/
+      - "traefik.http.routers.portainer-slash.rule=Host(`helpdesk.alexcabanha.com.br`) && Path(`/portainer`)"
+      - "traefik.http.routers.portainer-slash.entrypoints=websecure"
+      - "traefik.http.routers.portainer-slash.priority=300"
+      - "traefik.http.routers.portainer-slash.middlewares=portainer-slash"
+      - "traefik.http.routers.portainer-slash.service=portainer"
+      - "traefik.http.routers.portainer-slash.tls=true"
+      - "traefik.http.routers.portainer-slash.tls.certresolver=letsencrypt"
+
+      - "traefik.http.middlewares.portainer-slash.redirectregex.regex=^https?://([^/]+)/portainer$$"
+      - "traefik.http.middlewares.portainer-slash.redirectregex.replacement=https://$${1}/portainer/"
+      - "traefik.http.middlewares.portainer-slash.redirectregex.permanent=true"
+
+      # Portainer
+      - "traefik.http.routers.portainer.rule=Host(`helpdesk.alexcabanha.com.br`) && PathPrefix(`/portainer`)"
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.routers.portainer.priority=200"
+      - "traefik.http.routers.portainer.middlewares=portainer-strip"
+      - "traefik.http.middlewares.portainer-strip.stripprefix.prefixes=/portainer"
+      - "traefik.http.routers.portainer.tls=true"
+      - "traefik.http.routers.portainer.tls.certresolver=letsencrypt"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
-    mem_limit: 256m
-    cpus: 0.50
+    mem_limit: 1g
+    cpus: 1.00
 
 
 networks:
@@ -282,4 +443,7 @@ volumes:
     driver: local
 
   portainer_data:
+    driver: local
+
+  prometheus_data:
     driver: local
