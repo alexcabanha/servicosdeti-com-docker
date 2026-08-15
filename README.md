@@ -1,4 +1,4 @@
-# Projeto HelpDesk
+# Projeto HelpDesk com DockerCompose
 
 Projeto de HelpDesk desenvolvido como laboratório de infraestrutura, utilizando Docker, Azure, monitoramento, backup e acesso seguro via HTTPS. 
 O projeto abaixo é o projeto final solicitado pelo Curso de Docker Compose no Senac MS
